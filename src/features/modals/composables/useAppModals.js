@@ -2,10 +2,30 @@ import { defineAsyncComponent, watch } from 'vue';
 import { useModal } from './useModal.js';
 import { useModalStore } from '@/features/modals/stores/modalStore.js';
 import { useUiStore } from '@/features/cloud-sync/stores/uiStore.js';
-const LoadModal = defineAsyncComponent(() => import('@/features/modals/components/contents/LoadModal.vue'));
-const HistoryRecoveryModal = defineAsyncComponent(() => import('@/features/modals/components/contents/HistoryRecoveryModal.vue'));
-const IoModal = defineAsyncComponent(() => import('@/features/modals/components/contents/IoModal.vue'));
-const ShareResultModal = defineAsyncComponent(() => import('@/features/modals/components/contents/ShareResultModal.vue'));
+function lazyModal(loader) {
+  return defineAsyncComponent({
+    loader,
+    onError(error, retry, fail) {
+      if (error.message.includes('dynamically imported module') || error.message.includes('Failed to fetch')) {
+        const lastReload = sessionStorage.getItem('vite-preload-reload');
+        const now = Date.now();
+        if (lastReload && now - Number(lastReload) < 10000) {
+          fail();
+          return;
+        }
+        sessionStorage.setItem('vite-preload-reload', now.toString());
+        window.location.reload();
+      } else {
+        fail();
+      }
+    },
+  });
+}
+
+const LoadModal = lazyModal(() => import('@/features/modals/components/contents/LoadModal.vue'));
+const HistoryRecoveryModal = lazyModal(() => import('@/features/modals/components/contents/HistoryRecoveryModal.vue'));
+const IoModal = lazyModal(() => import('@/features/modals/components/contents/IoModal.vue'));
+const ShareResultModal = lazyModal(() => import('@/features/modals/components/contents/ShareResultModal.vue'));
 import { isDesktopDevice } from '@/shared/utils/device.js';
 import { messages } from '@/i18n/index.js';
 import { useShare } from '@/features/cloud-sync/composables/useShare.js';
@@ -27,6 +47,7 @@ export function useAppModals(options) {
     openPreviewPage,
     copyEditCallback,
     loadCharacterFromDrive,
+    checkUnsavedBeforeLoad,
     canSignInToGoogle,
     isDriveReady,
     getLocalHistoryList,
@@ -59,11 +80,18 @@ export function useAppModals(options) {
       buttons: [],
       on: {
         'load-local': async (event) => {
-          try {
-            await handleFileUpload(event);
-          } finally {
-            modalStore.hideModal();
+          // Capture file before modal changes may remove the input element
+          const file = event.target.files?.[0];
+          if (!file) return;
+
+          modalStore.hideModal();
+
+          if (typeof checkUnsavedBeforeLoad === 'function') {
+            const confirmed = await checkUnsavedBeforeLoad();
+            if (!confirmed) return;
           }
+
+          await handleFileUpload({ target: { files: [file], value: '' } });
         },
         'sign-in': handleSignInClick,
         'open-history': () => openHistoryRecoveryModal(),
